@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Copy files selected by a filename regex while preserving directory hierarchy."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+from typing import List, Pattern, Tuple
+
+
+def is_within(path: Path, parent: Path) -> bool:
+    """Return True when path is parent or one of its descendants."""
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def discover_matches(source: Path, pattern: Pattern[str]) -> Tuple[List[Path], List[str]]:
+    """Find regular files whose basename matches pattern; skip all symlinks."""
+    matches: List[Path] = []
+    errors: List[str] = []
+
+    # os.walk does not follow directory symlinks by default. Prune them explicitly.
+    for current, dirnames, filenames in os.walk(str(source), followlinks=False):
+        current_path = Path(current)
+
+        kept_dirs = []
+        for dirname in dirnames:
+            candidate = current_path / dirname
+            if candidate.is_symlink():
+                continue
+            kept_dirs.append(dirname)
+        dirnames[:] = kept_dirs
+
+        for filename in filenames:
+            candidate = current_path / filename
+            try:
+                if candidate.is_symlink():
+                    continue
+                if not candidate.is_file():
+                    continue
+                if pattern.search(candidate.name):
+                    matches.append(candidate)
+            except OSError as exc:
+                errors.append("Cannot inspect '{}': {}".format(candidate, exc))
+
+    matches.sort(key=lambda p: p.relative_to(source).as_posix())
+    return matches, errors
+
+
+def destination_path_is_safe(destination: Path, target: Path) -> bool:
+    """Reject symlink components inside the destination tree."""
+    try:
+        relative = target.relative_to(destination)
+    except ValueError:
+        return False
+
+    current = destination
+    # Check every existing component, including the target itself.
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return False
+    return True
+
+
+def copy_matches(
+    source: Path,
+    destination: Path,
+    matches: List[Path],
+    dry_run: bool = False,
+) -> Tuple[int, List[str]]:
+    copied = 0
+    errors: List[str] = []
+
+    for src in matches:
+        relative = src.relative_to(source)
+        target = destination / relative
+
+        if not destination_path_is_safe(destination, target):
+            errors.append(
+                "Refusing to write through a symbolic link in destination: '{}'".format(target)
+            )
+            continue
+
+        if dry_run:
+            print("[DRY-RUN] {} -> {}".format(src, target))
+            copied += 1
+            continue
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            # Re-check after creating parent directories, before writing.
+            if not destination_path_is_safe(destination, target):
+                raise OSError("destination path contains a symbolic link")
+
+            if target.exists() and target.is_dir():
+                raise IsADirectoryError("destination path is a directory")
+
+            shutil.copy2(str(src), str(target))
+            print("Copied: {} -> {}".format(src, target))
+            copied += 1
+        except OSError as exc:
+            errors.append("Failed to copy '{}' to '{}': {}".format(src, target, exc))
+
+    return copied, errors
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="hcp",
+        description=(
+            "Copy files whose basenames match a regular expression, "
+            "preserving their paths relative to the source directory."
+        ),
+        epilog=(
+            "Regex matching uses Python's re.search() against each filename only. "
+            "Symbolic links are skipped."
+        ),
+    )
+    parser.add_argument("source", help="source directory")
+    parser.add_argument("destination", help="destination directory")
+    parser.add_argument("regex", help="Python regular expression matched against basenames")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show what would be copied without creating or changing anything",
+    )
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        pattern = re.compile(args.regex)
+    except re.error as exc:
+        parser.error("invalid regular expression: {}".format(exc))
+
+    source_arg = Path(args.source).expanduser()
+    destination_arg = Path(args.destination).expanduser()
+
+    try:
+        source = source_arg.resolve(strict=True)
+        destination = destination_arg.resolve(strict=False)
+    except OSError as exc:
+        print("hcp: path error: {}".format(exc), file=sys.stderr)
+        return 2
+
+    if not source.is_dir():
+        print("hcp: source must be an existing directory: {}".format(source), file=sys.stderr)
+        return 2
+
+    if destination.exists() and not destination.is_dir():
+        print("hcp: destination exists and is not a directory: {}".format(destination), file=sys.stderr)
+        return 2
+
+    # Reject equal or nested roots in either direction. This avoids recursive copies
+    # and ambiguous source/destination overlap.
+    if is_within(destination, source) or is_within(source, destination):
+        print(
+            "hcp: source and destination must not be the same directory or contain one another",
+            file=sys.stderr,
+        )
+        return 2
+
+    matches, discovery_errors = discover_matches(source, pattern)
+    for error in discovery_errors:
+        print("hcp: " + error, file=sys.stderr)
+
+    if not matches:
+        print("hcp: no matching files found")
+        return 1 if discovery_errors else 0
+
+    if args.dry_run:
+        print("Dry run: {} matching file(s)".format(len(matches)))
+    else:
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print("hcp: cannot create destination '{}': {}".format(destination, exc), file=sys.stderr)
+            return 2
+
+    copied, copy_errors = copy_matches(source, destination, matches, dry_run=args.dry_run)
+
+    for error in copy_errors:
+        print("hcp: " + error, file=sys.stderr)
+
+    label = "Would copy" if args.dry_run else "Copied"
+    print("{} {} of {} matching file(s).".format(label, copied, len(matches)))
+
+    return 1 if discovery_errors or copy_errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
