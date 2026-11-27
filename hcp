@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copy files selected by a filename regex while preserving directory hierarchy."""
+"""Copy files and directories selected by a name regex while preserving directory hierarchy."""
 
 from __future__ import annotations
 
@@ -22,7 +22,10 @@ def is_within(path: Path, parent: Path) -> bool:
 
 
 def discover_matches(source: Path, pattern: Pattern[str]) -> Tuple[List[Path], List[str]]:
-    """Find regular files whose basename matches pattern; skip all symlinks."""
+    """Find files and directories whose basename matches pattern; skip all symlinks.
+
+    Matched directories are returned as a unit and not searched further.
+    """
     matches: List[Path] = []
     errors: List[str] = []
 
@@ -34,6 +37,10 @@ def discover_matches(source: Path, pattern: Pattern[str]) -> Tuple[List[Path], L
         for dirname in dirnames:
             candidate = current_path / dirname
             if candidate.is_symlink():
+                continue
+            if pattern.search(dirname):
+                # Matched directory is copied whole; do not descend into it.
+                matches.append(candidate)
                 continue
             kept_dirs.append(dirname)
         dirnames[:] = kept_dirs
@@ -70,6 +77,32 @@ def destination_path_is_safe(destination: Path, target: Path) -> bool:
     return True
 
 
+def copy_tree(src: Path, target: Path, destination: Path) -> int:
+    """Copy a directory tree, skipping symlinks. Returns number of files copied."""
+    count = 0
+    if not destination_path_is_safe(destination, target):
+        raise OSError("destination path contains a symbolic link")
+    if target.exists() and not target.is_dir():
+        raise NotADirectoryError("destination path is not a directory")
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copystat(str(src), str(target))
+    for entry in sorted(os.scandir(str(src)), key=lambda e: e.name):
+        entry_src = Path(entry.path)
+        if entry.is_symlink():
+            continue
+        entry_target = target / entry.name
+        if entry.is_dir(follow_symlinks=False):
+            count += copy_tree(entry_src, entry_target, destination)
+        elif entry.is_file(follow_symlinks=False):
+            if not destination_path_is_safe(destination, entry_target):
+                raise OSError("destination path contains a symbolic link")
+            if entry_target.is_dir():
+                raise IsADirectoryError("destination path is a directory")
+            shutil.copy2(str(entry_src), str(entry_target))
+            count += 1
+    return count
+
+
 def copy_matches(
     source: Path,
     destination: Path,
@@ -90,12 +123,19 @@ def copy_matches(
             continue
 
         if dry_run:
-            print("[DRY-RUN] {} -> {}".format(src, target))
+            suffix = "/" if src.is_dir() else ""
+            print("[DRY-RUN] {}{} -> {}{}".format(src, suffix, target, suffix))
             copied += 1
             continue
 
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
+
+            if src.is_dir():
+                nfiles = copy_tree(src, target, destination)
+                print("Copied directory: {} -> {} ({} file(s))".format(src, target, nfiles))
+                copied += 1
+                continue
 
             # Re-check after creating parent directories, before writing.
             if not destination_path_is_safe(destination, target):
@@ -117,11 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hcp",
         description=(
-            "Copy files whose basenames match a regular expression, "
-            "preserving their paths relative to the source directory."
+            "Copy files and directories whose basenames match a regular expression, "
+            "preserving their paths relative to the source directory. "
+            "Matched directories are copied with all their contents."
         ),
         epilog=(
-            "Regex matching uses Python's re.search() against each filename only. "
+            "Regex matching uses Python's re.search() against each file and directory name only. "
             "Symbolic links are skipped."
         ),
     )
@@ -177,11 +218,11 @@ def main(argv=None) -> int:
         print("hcp: " + error, file=sys.stderr)
 
     if not matches:
-        print("hcp: no matching files found")
+        print("hcp: no matching files or directories found")
         return 1 if discovery_errors else 0
 
     if args.dry_run:
-        print("Dry run: {} matching file(s)".format(len(matches)))
+        print("Dry run: {} matching item(s)".format(len(matches)))
     else:
         try:
             destination.mkdir(parents=True, exist_ok=True)
@@ -195,7 +236,7 @@ def main(argv=None) -> int:
         print("hcp: " + error, file=sys.stderr)
 
     label = "Would copy" if args.dry_run else "Copied"
-    print("{} {} of {} matching file(s).".format(label, copied, len(matches)))
+    print("{} {} of {} matching item(s).".format(label, copied, len(matches)))
 
     return 1 if discovery_errors or copy_errors else 0
 

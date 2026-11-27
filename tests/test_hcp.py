@@ -51,6 +51,41 @@ class HcpCliTests(unittest.TestCase):
         self.assertTrue((self.destination / "one" / "index.md").exists())
         self.assertTrue((self.destination / "two" / "deep" / "index.md").exists())
 
+    def test_matching_directory_copied_whole_with_hierarchy(self):
+        d = self.source / "a" / "docs" / "sub"
+        d.mkdir(parents=True)
+        (d / "x.txt").write_text("x")
+        (self.source / "a" / "docs" / "y.txt").write_text("y")
+        (self.source / "a" / "other.txt").write_text("no")
+        os.symlink(str(self.source / "a" / "other.txt"), str(self.source / "a" / "docs" / "link"))
+
+        result = self.run_hcp(r"^docs$")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.destination / "a" / "docs" / "sub" / "x.txt").read_text(), "x")
+        self.assertEqual((self.destination / "a" / "docs" / "y.txt").read_text(), "y")
+        self.assertFalse((self.destination / "a" / "other.txt").exists())
+        self.assertFalse((self.destination / "a" / "docs" / "link").exists(), "symlink skipped")
+        self.assertIn("Copied 1 of 1 matching item(s)", result.stdout)
+
+    def test_file_and_directory_both_match(self):
+        (self.source / "docs").mkdir()
+        (self.source / "docs" / "docs.txt").write_text("in")
+        (self.source / "docs.md").write_text("f")
+        result = self.run_hcp(r"docs")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.destination / "docs" / "docs.txt").exists())
+        self.assertTrue((self.destination / "docs.md").exists())
+        self.assertIn("Copied 2 of 2", result.stdout)
+
+    def test_dry_run_directory(self):
+        (self.source / "docs").mkdir()
+        (self.source / "docs" / "a.txt").write_text("a")
+        result = self.run_hcp(r"^docs$", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[DRY-RUN]", result.stdout)
+        self.assertFalse(self.destination.exists())
+
     def test_dry_run_does_not_create_destination(self):
         (self.source / "keep.txt").write_text("hello")
         result = self.run_hcp(r"\.txt$", "--dry-run")

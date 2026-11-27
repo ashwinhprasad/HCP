@@ -1,7 +1,7 @@
 # hcp — hierarchical copy
 
-`hcp` copies files selected by a regular expression while preserving each
-file's directory hierarchy relative to the source directory.
+`hcp` copies files and directories selected by a regular expression while
+preserving each item's directory hierarchy relative to the source directory.
 
 It uses only the Python standard library.
 
@@ -41,6 +41,9 @@ hcp ./docs ./docs-subset '\.md$'
 # Copy AGENTS.md and index.md wherever they occur
 hcp ./project ./context '^(AGENTS\.md|index\.md)$'
 
+# Copy every directory named docs, with everything inside
+hcp ./project ./out '^docs$'
+
 # Copy files named config.json
 hcp ./project ./configs '^config\.json$'
 
@@ -51,8 +54,12 @@ hcp ./project ./context '\.md$' --dry-run
 ## Behaviour
 
 - The regex is compiled using Python's `re` module and searched against the
-  **basename only** (for example, `index.md`, not `parrtos/index.md`).
+  **basename only** (for example, `index.md`, not `parrtos/index.md`). This
+  applies to both file and directory names.
 - Matching files are copied to the same relative path under the destination.
+- A matching directory is copied recursively with all its contents (symlinks
+  skipped) to the same relative path. Its contents are not matched separately.
+  Non-matching directories are still searched.
 - Required parent directories are created automatically.
 - Hidden files are included if their basenames match.
 - Existing matching destination files are overwritten.
