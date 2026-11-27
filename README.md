@@ -47,6 +47,15 @@ hcp ./project ./out '^docs$'
 # Copy files named config.json
 hcp ./project ./configs '^config\.json$'
 
+# Match against the relative path instead of the basename (partial match)
+hcp ./project ./out 'docs/api' --full-path
+
+# Pick one specific directory among same-named ones in other subtrees
+hcp ./project ./out '^a/docs$' --full-path
+
+# Pick several specific directories
+hcp ./project ./out '^(a/docs|b/assets)$' --full-path
+
 # Preview without creating or changing destination files
 hcp ./project ./context '\.md$' --dry-run
 ```
@@ -56,6 +65,15 @@ hcp ./project ./context '\.md$' --dry-run
 - The regex is compiled using Python's `re` module and searched against the
   **basename only** (for example, `index.md`, not `parrtos/index.md`). This
   applies to both file and directory names.
+- With `--full-path`, the regex is instead searched against the path relative
+  to the source directory, always with `/` separators (for example
+  `a/docs/x.txt`, `a/docs`). It is still a search, so partial patterns work;
+  anchor with `^`/`$` for exact paths. Notes:
+  - `docs/api` also matches `a/docs/apiv2` and `a/docs/api.md`; use `docs/api$`
+    for an exact name.
+  - Directory paths have no trailing slash, so `docs/` matches the files under
+    `a/docs` (copied individually), not the directory itself; use `docs$`.
+  - Paths are relative to the source root; don't start patterns with `/`.
 - Matching files are copied to the same relative path under the destination.
 - A matching directory is copied recursively with all its contents (symlinks
   skipped) to the same relative path. Its contents are not matched separately.

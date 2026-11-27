@@ -78,6 +78,48 @@ class HcpCliTests(unittest.TestCase):
         self.assertTrue((self.destination / "docs.md").exists())
         self.assertIn("Copied 2 of 2", result.stdout)
 
+    def _tree(self):
+        for d in ("a/docs", "b/docs", "c/docs/api", "c/docs/apiv2"):
+            (self.source / d).mkdir(parents=True)
+            (self.source / d / "f.txt").write_text(d)
+        (self.source / "c" / "docs" / "api.md").write_text("m")
+
+    def test_full_path_exact_directory_among_same_names(self):
+        self._tree()
+        result = self.run_hcp(r"^a/docs$", "--full-path")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.destination / "a" / "docs" / "f.txt").exists())
+        self.assertFalse((self.destination / "b").exists())
+        self.assertFalse((self.destination / "c").exists())
+
+    def test_full_path_partial_match_directory(self):
+        self._tree()
+        result = self.run_hcp(r"docs/api$", "--full-path")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.destination / "c" / "docs" / "api" / "f.txt").exists())
+        self.assertFalse((self.destination / "c" / "docs" / "apiv2").exists())
+        self.assertFalse((self.destination / "c" / "docs" / "api.md").exists())
+
+    def test_full_path_partial_match_file(self):
+        self._tree()
+        result = self.run_hcp(r"docs/api\.md", "--full-path")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.destination / "c" / "docs" / "api.md").exists())
+        self.assertFalse((self.destination / "a").exists())
+
+    def test_full_path_trailing_slash_matches_files_not_directory(self):
+        self._tree()
+        result = self.run_hcp(r"^a/docs/", "--full-path")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.destination / "a" / "docs" / "f.txt").exists())
+        self.assertIn("Copied 1 of 1", result.stdout)
+
+    def test_default_ignores_path_separators(self):
+        self._tree()
+        result = self.run_hcp(r"^a/docs$")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.destination.exists())
+
     def test_dry_run_directory(self):
         (self.source / "docs").mkdir()
         (self.source / "docs" / "a.txt").write_text("a")

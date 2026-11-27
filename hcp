@@ -21,13 +21,20 @@ def is_within(path: Path, parent: Path) -> bool:
         return False
 
 
-def discover_matches(source: Path, pattern: Pattern[str]) -> Tuple[List[Path], List[str]]:
+def discover_matches(
+    source: Path, pattern: Pattern[str], full_path: bool = False
+) -> Tuple[List[Path], List[str]]:
     """Find files and directories whose basename matches pattern; skip all symlinks.
 
     Matched directories are returned as a unit and not searched further.
+    With full_path, the pattern is searched against the POSIX-style path
+    relative to source instead of the basename.
     """
     matches: List[Path] = []
     errors: List[str] = []
+
+    def subject(path: Path) -> str:
+        return path.relative_to(source).as_posix() if full_path else path.name
 
     # os.walk does not follow directory symlinks by default. Prune them explicitly.
     for current, dirnames, filenames in os.walk(str(source), followlinks=False):
@@ -38,7 +45,7 @@ def discover_matches(source: Path, pattern: Pattern[str]) -> Tuple[List[Path], L
             candidate = current_path / dirname
             if candidate.is_symlink():
                 continue
-            if pattern.search(dirname):
+            if pattern.search(subject(candidate)):
                 # Matched directory is copied whole; do not descend into it.
                 matches.append(candidate)
                 continue
@@ -52,7 +59,7 @@ def discover_matches(source: Path, pattern: Pattern[str]) -> Tuple[List[Path], L
                     continue
                 if not candidate.is_file():
                     continue
-                if pattern.search(candidate.name):
+                if pattern.search(subject(candidate)):
                     matches.append(candidate)
             except OSError as exc:
                 errors.append("Cannot inspect '{}': {}".format(candidate, exc))
@@ -168,7 +175,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("source", help="source directory")
     parser.add_argument("destination", help="destination directory")
-    parser.add_argument("regex", help="Python regular expression matched against basenames")
+    parser.add_argument("regex", help="Python regular expression matched against basenames (or relative paths with --full-path)")
+    parser.add_argument(
+        "--full-path",
+        action="store_true",
+        help=(
+            "match the regex against each item's path relative to the source "
+            "directory (using '/' separators) instead of its basename"
+        ),
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -213,7 +228,7 @@ def main(argv=None) -> int:
         )
         return 2
 
-    matches, discovery_errors = discover_matches(source, pattern)
+    matches, discovery_errors = discover_matches(source, pattern, full_path=args.full_path)
     for error in discovery_errors:
         print("hcp: " + error, file=sys.stderr)
 
